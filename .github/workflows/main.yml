@@ -1,1 +1,67 @@
 
+name: Avica + win11 + tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-avica:
+    runs-on: windows-latest
+    env:
+      TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+    steps:
+
+    - name: Install Tailscale (silent for all users)
+      shell: powershell
+      run: |
+        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+        $installerPath = "$env:TEMP\tailscale.msi"
+        Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+        Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+        Remove-Item $installerPath -Force
+
+    - name: Establish Tailscale Connection
+      shell: powershell
+      run: |
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+
+        $tsIP = $null
+        $retries = 0
+        while (-not $tsIP -and $retries -lt 10) {
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            Start-Sleep -Seconds 5
+            $retries++
+        }
+
+        if (-not $tsIP) {
+            Write-Error "Tailscale IP not assigned. Exiting."
+            exit 1
+        }
+
+        echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+    - name: Download and run setup.bat from GitLab
+      shell: powershell
+      run: |
+        Invoke-WebRequest -Uri "https://gitlab.com/MR.English2008/avica/-/raw/main/setup.bat" -OutFile "setup.bat"
+        cmd /c setup.bat
+
+    - name: Install Python libraries
+      shell: bash
+      run: |
+        pip install pillow requests
+
+    - name: Run show.bat
+      shell: cmd
+      run: |
+        call show.bat
+
+    - name: Keep runner alive (heartbeat)
+      shell: powershell
+      run: |
+        while ($true) {
+          Write-Host (Get-Date -Format "u") " - heartbeat"
+          Start-Sleep -Seconds 60
+        }
+        
