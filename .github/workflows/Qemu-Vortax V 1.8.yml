@@ -39,8 +39,8 @@ on:
         description: 'Upload QCOW2 file to Mega: yes or no'
         required: true
         default: 'yes'
-      user_password:
-        description: 'Password for the user (entered by the person running the workflow). This value will be masked and will not be printed in logs.'
+      access_password:
+        description: 'Set the VM password at workflow dispatch (will be masked in logs; keep it secret)'
         required: true
         default: ''
 
@@ -52,8 +52,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
+      # The runner account name
       USERNAME: runner
-      # PASSWORD is set at runtime from workflow input (masked); do not set it here
+      # PASSWORD will be set from the workflow_dispatch input (do not print this in logs)
+      PASSWORD: ${{ github.event.inputs.access_password }}
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
       NGROK_AUTH: ${{ secrets.NGROK_AUTH }}
       FINAL_SOURCE_URL: ''
@@ -63,19 +65,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Mask and store the runtime password (do NOT print it)
+      - name: Mask the supplied password (prevent printing to logs)
+        # This ensures the supplied access_password is masked in GitHub Actions logs.
         run: |
-          # mask the value in logs
-          echo "::add-mask::${{ github.event.inputs.user_password }}"
-          # store for later steps without printing
-          echo "PASSWORD=${{ github.event.inputs.user_password }}" >> $GITHUB_ENV
-          # best effort tighten perms on env file (may be runner-specific)
-          chmod 600 $GITHUB_ENV || true
+          if [ -n "${{ github.event.inputs.access_password }}" ]; then
+            # Add GitHub Actions mask for the value so it will be hidden if accidentally printed
+            echo "::add-mask::${{ github.event.inputs.access_password }}"
+          fi
 
       - name: Prepare user and sudo
         run: |
-          # apply password safely (avoids echoing it into logs)
-          sudo chpasswd <<< "${USERNAME}:${PASSWORD}"
+          # Set the runner account password to the supplied (masked) password.
+          # Because the password is masked above, it will not appear in logs.
+          echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
           echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
           sudo mkdir -p /mnt/tmp /mnt/cache
           sudo chmod -R 777 /mnt/tmp /mnt/cache
@@ -448,11 +450,15 @@ jobs:
 
       - name: Connection Information and Keep Alive
         run: |
+          # IMPORTANT: Do NOT print the raw PASSWORD anywhere in logs.
+          # The runner who dispatched this workflow must keep the access_password
+          # they provided when starting the workflow. It will not be printed here.
           echo "Thanks to MR.English2008 for this perfect work"
           echo
           echo "=== CONNECTION INFORMATION ==="
           echo "RDP Username: ${USERNAME}"
-          echo "RDP Password: [SET BY DISPATCHER]"
+          # Do not print the password — only indicate that it was set at dispatch time.
+          echo "RDP Password: [SET AT WORKFLOW DISPATCH — NOT SHOWN IN LOGS]"
           echo
           echo "Connection Type: ${{ env.CONNECTION_TYPE }}"
           echo "Program Selected: ${{ github.event.inputs.connection_program }}"
@@ -461,4 +467,17 @@ jobs:
             echo "Tailscale IP:"
             sudo tailscale ip -4 || true
             echo
-            echo ">>> RDP Con
+            echo ">>> RDP Connection: ${{ env.CONNECTION_IP }}"
+            echo ">>> VNC Connection: ${{ env.CONNECTION_IP }}:5900"
+            echo ">>> NoMachine Connection: ${{ env.CONNECTION_IP }}4000"
+          else
+            if [ "${{ github.event.inputs.connection_program }}" = "RDP" ]; then
+              echo ">>> RDP (Ngrok): ${{ env.RDP_URL }}"
+            elif [ "${{ github.event.inputs.connection_program }}" = "VNC" ]; then
+              echo ">>> VNC (Ngrok): ${{ env.VNC_URL }}"
+            elif [ "${{ github.event.inputs.connection_program }}" = "NoMachine" ]; then
+              echo ">>> NoMachine (Ngrok): ${{ env.NX_URL }}"
+            fi
+          fi
+          echo
+          echo "NOTE: if you connect with RDP or VNC you have to click on Connect_VNC.sh to open the qemu VM"
