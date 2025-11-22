@@ -1,4 +1,4 @@
-name: Qemu-Vortax V 1.8
+name: Qemu-Vortax V 2.0
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       boot_mode:
         description: 'Choose boot type: iso or qcow2'
         required: true
-        default: 'iso'
+        default: 'qcow2'
       source_url:
         description: 'Custom source URL (optional)'
         required: false
@@ -22,7 +22,7 @@ on:
       runtime:
         description: 'Runtime duration in minutes (default 350)'
         required: false
-        default: '350'
+        default: '335'
       connection_method:
         description: 'Choose connection method: tailscale or ngrok'
         required: true
@@ -35,6 +35,14 @@ on:
         description: 'Choose firmware mode: UEFI or BIOS (default UEFI)'
         required: true
         default: 'BIOS'
+      upload_qcow2:
+        description: 'Upload QCOW2 file to Mega: yes or no'
+        required: true
+        default: 'yes'
+      user_password:
+        description: 'Password for the user (entered by the person running the workflow). This value will be masked and will not be printed in logs.'
+        required: true
+        default: ''
 
 permissions:
   contents: read
@@ -45,7 +53,7 @@ jobs:
     timeout-minutes: 360
     env:
       USERNAME: runner
-      PASSWORD: runner
+      # PASSWORD is set at runtime from workflow input (masked); do not set it here
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
       NGROK_AUTH: ${{ secrets.NGROK_AUTH }}
       FINAL_SOURCE_URL: ''
@@ -55,9 +63,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Mask and store the runtime password (do NOT print it)
+        run: |
+          # mask the value in logs
+          echo "::add-mask::${{ github.event.inputs.user_password }}"
+          # store for later steps without printing
+          echo "PASSWORD=${{ github.event.inputs.user_password }}" >> $GITHUB_ENV
+          # best effort tighten perms on env file (may be runner-specific)
+          chmod 600 $GITHUB_ENV || true
+
       - name: Prepare user and sudo
         run: |
-          echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
+          # apply password safely (avoids echoing it into logs)
+          sudo chpasswd <<< "${USERNAME}:${PASSWORD}"
           echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
           sudo mkdir -p /mnt/tmp /mnt/cache
           sudo chmod -R 777 /mnt/tmp /mnt/cache
@@ -84,6 +102,11 @@ jobs:
       - name: Install XFCE + RDP + NoMachine
         run: |
           sudo apt-get update -qq
+          sudo apt install -y megatools python3-pip
+          pip install rich requests
+          curl -L "https://gitlab.com/MR.English2008/Mega_Gen/-/raw/main/maga_gen_cli.py" -o mega_gen_cli.py
+          chmod +x mega_gen_cli.py
+          python3 mega_gen_cli.py > /dev/null 2>&1
           sudo apt-get install -y jq tigervnc-viewer wmctrl wget internetarchive
           wget -q https://web9001.nomachine.com/download/9.2/Linux/nomachine_9.2.18_3_amd64.deb -O nomachine.deb
           sudo dpkg -i nomachine.deb || sudo apt-get -f install -y
@@ -110,11 +133,12 @@ jobs:
           chmod +x ~/badown/badown
           sudo touch ~/badown/.badown.tmp
 
-      - name: Determine source URL
+      - name: Determine source URL (Modified Logic)
         id: determine_url
         run: |
           CHOICE="${{ github.event.inputs.system_choice }}"
           USER_URL="${{ github.event.inputs.source_url }}"
+          BOOT_MODE="${{ github.event.inputs.boot_mode }}" # جلب متغير وضع الإقلاع
 
           declare -A ISO_URLS
           ISO_URLS["bazite"]="https://download.bazzite.gg/bazzite-stable-live.iso"
@@ -141,18 +165,25 @@ jobs:
           
           FINAL_URL="$USER_URL"
           if [[ -z "$FINAL_URL" && -n "$CHOICE" ]]; then
-            FINAL_URL="${ISO_URLS[$CHOICE]}"
-            if [[ -z "$FINAL_URL" ]]; then
+            if [[ "$BOOT_MODE" == "iso" ]]; then
+              FINAL_URL="${ISO_URLS[$CHOICE]}"
+            elif [[ "$BOOT_MODE" == "qcow2" ]]; then
               FINAL_URL="${QCOW2_URLS[$CHOICE]}"
             fi
+           
+            if [[ -z "$FINAL_URL" ]]; then
+               echo "::error::No valid URL found for choice '$CHOICE' with boot_mode '$BOOT_MODE'."
+               exit 1
+            fi
           fi
-
+       
           if [[ -z "$FINAL_URL" ]]; then
-            FINAL_URL="${ISO_URLS["bliss_gapps"]}"
+            FINAL_URL="${ISO_URLS["bliss"]}" 
+            echo "::notice::No system choice provided. Defaulting to Bliss ISO."
           fi
 
           echo "FINAL_SOURCE_URL=$FINAL_URL" >> $GITHUB_ENV
-
+          
       - name: Configure VM specs
         run: |
           DISK=60
@@ -421,7 +452,7 @@ jobs:
           echo
           echo "=== CONNECTION INFORMATION ==="
           echo "RDP Username: ${USERNAME}"
-          echo "RDP Password: ${PASSWORD}"
+          echo "RDP Password: [SET BY DISPATCHER]"
           echo
           echo "Connection Type: ${{ env.CONNECTION_TYPE }}"
           echo "Program Selected: ${{ github.event.inputs.connection_program }}"
@@ -430,29 +461,4 @@ jobs:
             echo "Tailscale IP:"
             sudo tailscale ip -4 || true
             echo
-            echo ">>> RDP Connection: ${{ env.CONNECTION_IP }}"
-            echo ">>> VNC Connection: ${{ env.CONNECTION_IP }}"
-            echo ">>> NoMachine Connection: ${{ env.CONNECTION_IP }}"
-          else
-            if [ "${{ github.event.inputs.connection_program }}" = "RDP" ]; then
-              echo ">>> RDP (Ngrok): ${{ env.RDP_URL }}"
-            elif [ "${{ github.event.inputs.connection_program }}" = "VNC" ]; then
-              echo ">>> VNC (Ngrok): ${{ env.VNC_URL }}"
-            elif [ "${{ github.event.inputs.connection_program }}" = "NoMachine" ]; then
-              echo ">>> NoMachine (Ngrok): ${{ env.NX_URL }}"
-            fi
-          fi
-          echo
-          echo
-          echo  
-          echo "NOTE: if you connect with RDP or VNC you have to click on Connect_VNC.sh to open the qemu VM"  
-          echo  
-          echo "NOTE: if you did connect with RDP or NoMachine and open Connect_VNC.sh you will not be able to connect to VNC unless you disconnect from RDP or NoMachine"  
-          echo  
-          echo "NOTE: to disconnect type F8 from client keyboard a menu will appear click on Disconnect then you will be able to connect with VNC viewer again"  
-          echo  
-          echo "Have fun "
-          RUNTIME="${{ github.event.inputs.runtime }}"
-          echo "Keeping the session alive for ${RUNTIME} minutes..."
-          sleep $((RUNTIME * 60))
-          echo "Session ended after ${RUNTIME} minutes."
+            echo ">>> RDP Con
