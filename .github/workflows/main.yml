@@ -1,4 +1,3 @@
-
 name: Avica + win11 + tailscale
 
 on:
@@ -35,6 +34,56 @@ jobs:
         }
 
         if (-not $tsIP) {
+            Write-Error "Tailscale IP not assigned. Exiting."
+            exit 1
+        }
+
+        echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+    - name: Download and run setup.bat from GitLab
+      shell: powershell
+      run: |
+        Invoke-WebRequest -Uri "https://gitlab.com/MR.English2008/avica/-/raw/main/setup.bat" -OutFile "setup.bat"
+        cmd /c setup.bat
+
+    - name: Install Python libraries
+      shell: bash
+      run: |
+        pip install pillow requests
+
+    - name: Run show.bat
+      shell: cmd
+      run: |
+        call show.bat
+
+    # ---------------------------------------------
+    #  NEW: Install Firefox extensions
+    # ---------------------------------------------
+
+    - name: Add Firefox Extensions (Unlock + HTML Universal Speed)
+      shell: powershell
+      run: |
+        $ffProfile = Get-ChildItem "$env:APPDATA\Mozilla\Firefox\Profiles" | Where-Object { $_.PSIsContainer } | Select-Object -First 1
+        if (-not $ffProfile) {
+            Write-Error "Firefox profile not found!"
+            exit 1
+        }
+        $extDir = "$($ffProfile.FullName)\extensions"
+        New-Item -ItemType Directory -Force -Path $extDir | Out-Null
+
+        # Unlock extension (replace URL if needed)
+        Invoke-WebRequest -Uri "https://addons.mozilla.org/firefox/downloads/latest/unlock/addon.xpi" -OutFile "$extDir\unlock.xpi"
+
+        # HTML Universal Speed extension (replace URL if needed)
+        Invoke-WebRequest -Uri "https://addons.mozilla.org/firefox/downloads/latest/html-universal-speed/addon.xpi" -OutFile "$extDir\html-speed.xpi"
+
+    - name: Keep runner alive (heartbeat)
+      shell: powershell
+      run: |
+        while ($true) {
+          Write-Host (Get-Date -Format "u") " - heartbeat"
+          Start-Sleep -Seconds 60
+        }        if (-not $tsIP) {
             Write-Error "Tailscale IP not assigned. Exiting."
             exit 1
         }
